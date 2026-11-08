@@ -1,0 +1,443 @@
+{
+  "name": "Week 03 - Multi-Tool ReAct Agent Orchestration with Postgres, API, and Vector Store",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-inquiry",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000001",
+      "name": "Agent Inquiry Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        100,
+        300
+      ],
+      "webhookId": "b3c10001-week03-agent-inquiry"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==============================================================================\n// Week 3: 인입 질의 전처리, 세션 식별자(Session ID) 할당 및 입력 정규화\n// ==============================================================================\nconst input = $input.first().json;\n\n// 1. HTTP Body에서 사용자 질의 추출 (다양한 필드 키 대응)\nconst promptText = input.body?.prompt || input.body?.query || input.prompt || input.query || input.body?.message || (typeof input.body === 'string' ? input.body : \"대한전자 결제 DB 장애 상태 점검 및 대응 절차 안내 요청\");\n\n// 2. 세션 식별자(Session ID) 파싱 또는 자동 생성 (멀티턴 메모리 유지용)\nconst sessionId = input.body?.session_id || input.session_id || input.headers?.['x-session-id'] || `sess-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;\n\n// 3. 대상 고객사 힌트 및 서버 ID 메타데이터 추출 (옵션)\nconst targetCompany = input.body?.company_name || input.company_name || \"\";\nconst targetServerId = input.body?.server_id || input.server_id || \"\";\n\nreturn [{\n  json: {\n    chatInput: String(promptText).trim(),\n    sessionId: sessionId,\n    targetCompany: targetCompany,\n    targetServerId: targetServerId,\n    received_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000002",
+      "name": "Extract Input and Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=당신은 엔터프라이즈 통합 인프라 및 ITSM 관제 센터의 수석 자동화 에이전트(Autonomous SRE Lead Agent)입니다.\n사용자 질의 및 인시던트 보고를 분석하여 고객사의 계약 정보, 실시간 서버 메트릭, 그리고 사내 표준 운영 절차(Runbook/SLA)를 종합적으로 파악한 후 최적의 장애 진단 및 조치 권고 리포트를 작성하십시오.\n\n[사용자 질의/보고 내용]:\n{{ $json.chatInput }}\n\n[필수 지침 및 도구 활용 원칙]:\n1. 반드시 제공된 3가지 도구를 적절히 활용하여 근거를 확보한 뒤 답변하십시오.\n   - 고객사의 계약 등급(VIP 여부) 및 과거 장애 이력이 필요한 경우: 'lookup_customer_incident_history' 도구를 호출하십시오.\n   - 시스템 인프라(DB, WAS 등)의 실시간 상태(CPU, 메모리, DB 커넥션 풀) 확인이 필요한 경우: 'fetch_server_metrics' 도구를 호출하십시오. (기본 DB 서버: db-primary-01, WAS 서버: app-was-01)\n   - 장애 복구 절차(Runbook) 또는 SLA 규정(목표 응답시간, 장애 보상 규정)이 필요한 경우: 'search_enterprise_runbook' 도구를 호출하십시오.\n2. 도구 호출 결과를 종합하여 최종 리포트를 작성할 때는 반드시 아래 구조를 엄격히 준수하십시오.\n   - [1] 고객사 프로파일 및 SLA 등급 (VIP 여부, 약정 SLA 응답 시간)\n   - [2] 실시간 인프라 메트릭 진단 (CPU/메모리, 커넥션 풀 가용률, 현재 위험 상태)\n   - [3] 사내 매뉴얼 기반 권고 복구 절차 (Runbook 섹션, 즉각 조치 및 안전 지침)\n   - [4] SLA 보상 및 후속 조치 방안 (담당 어카운트 매니저 통보, 승인 필요 여부)\n3. 사실에 근거하지 않은 추측이나 환각을 절대 작성하지 말고, 도구 실행 결과에서 확인된 데이터만을 기반으로 보고서를 작성하십시오.",
+        "options": {
+          "systemMessage": "당신은 고도로 정밀한 ReAct 루프를 따르는 엔터프라이즈 AI 관제 에이전트입니다. 도구 호출 인자는 정해진 스키마를 엄격히 준수해야 하며, 필요한 모든 정보를 도구를 통해 수집하기 전에는 성급히 최종 답변을 내리지 마십시오."
+        }
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000003",
+      "name": "ReAct Multi-Tool Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "qwen2.5:7b",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000004",
+      "name": "Ollama Chat Model (Qwen 2.5 7B)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        420,
+        520
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-local-creds",
+          "name": "Ollama Local (http://ollama:11434)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Extract Input and Session').item.json.sessionId }}",
+        "tableName": "n8n_chat_histories"
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000005",
+      "name": "Postgres Chat Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        560,
+        520
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local-creds",
+          "name": "PostgreSQL (itsm_db)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "lookup_customer_incident_history",
+        "description": "고객사명(company_name)을 입력받아 CRM/ITSM 데이터베이스에서 계약 등급(contract_tier: VIP/Enterprise/Standard), 목표 SLA 응답시간(분), 담당자 이메일, 그리고 최근 3개월간 발생한 장애 티켓 목록을 조회합니다. 고객사 정보 확인이 필요할 때 반드시 호출하십시오.",
+        "workflowId": {
+          "__rl": true,
+          "value": "sub-wf-customer-history",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "company_name": "={{ $fromAI('company_name', '조회할 고객사의 법인명 또는 상호명 (예: (주)대한전자, 미래파이낸셜 등)', 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "company_name",
+              "displayName": "company_name",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000006",
+      "name": "Tool 1: Customer DB Subworkflow",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        700,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "name": "fetch_server_metrics",
+        "description": "사내 모니터링 API로부터 특정 서버의 실시간 하드웨어 메트릭(CPU 사용률 %, 메모리 점유율 %, DB 커넥션 풀 활성/최대치/대기열, 종합 상태 healthy/degraded/critical)을 조회합니다. server_id는 'db-primary-01'(메인 RDBMS 클러스터), 'app-was-01'(주문 WAS 인스턴스), 'auth-api-01'(인증 게이트웨이) 중 하나를 지정하십시오.",
+        "method": "GET",
+        "url": "=http://mock-enterprise-api:8000/api/v1/metrics/{{ $fromAI('server_id', '조회할 서버 식별자 (예: db-primary-01, app-was-01, auth-api-01)', 'string') }}",
+        "sendQuery": false,
+        "sendHeaders": false
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000007",
+      "name": "Tool 2: Mock Enterprise Metrics API",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        860,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "name": "search_enterprise_runbook",
+        "description": "사내 Qdrant 벡터 데이터베이스(enterprise_runbook 컬렉션)에서 SLA 정책 규정, 장애 보상 기준, 그리고 인프라 장애(DB 커넥션 풀 고갈, 메모리 누수, SSO 타임아웃 등)의 표준 복구 절차(Runbook)를 의미론적으로 검색합니다. 문제 해결 조치 절차나 보상 규정을 확인할 때 호출하십시오."
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000008",
+      "name": "Tool 3: Qdrant Vector Store Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolVectorStore",
+      "typeVersion": 1,
+      "position": [
+        1020,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "collectionName": "enterprise_runbook",
+        "options": {
+          "topK": 3
+        }
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000009",
+      "name": "Qdrant Runbook Store",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1,
+      "position": [
+        1020,
+        680
+      ],
+      "credentials": {
+        "qdrantApi": {
+          "id": "qdrant-local-creds",
+          "name": "Qdrant Local (http://qdrant:6333)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "bge-m3"
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000010",
+      "name": "Ollama Embeddings (bge-m3)",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOllama",
+      "typeVersion": 1,
+      "position": [
+        1020,
+        840
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-local-creds",
+          "name": "Ollama Local (http://ollama:11434)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==============================================================================\n// Week 3: 에이전트 최종 실행 결과 구조화 및 감사 페이로드 패키징\n// ==============================================================================\nconst agentOutput = $input.first().json;\nconst sessionContext = $('Extract Input and Session').item.json;\n\nconst rawOutputText = agentOutput.output || agentOutput.text || JSON.stringify(agentOutput);\n\nreturn [{\n  json: {\n    status: \"success\",\n    session_id: sessionContext.sessionId,\n    query: sessionContext.chatInput,\n    agent_report: rawOutputText,\n    generated_at: new Date().toISOString(),\n    orchestrator: \"n8n-react-multi-tool-agent\",\n    tools_bound: [\n      \"lookup_customer_incident_history (Postgres Sub-workflow)\",\n      \"fetch_server_metrics (Mock Enterprise API)\",\n      \"search_enterprise_runbook (Qdrant Vector Store bge-m3)\"\n    ]\n  }\n}];"
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000011",
+      "name": "Format Agent Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "c3a1b2c1-0001-4001-8001-000000000012",
+      "name": "Respond to Agent Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1080,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "c3a1b2c1-0002-4002-8002-000000000001",
+      "name": "Execute Subworkflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        1100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n    c.customer_id,\n    c.company_name,\n    c.contract_tier,\n    c.sla_response_minutes,\n    c.account_manager_email,\n    COALESCE(t.ticket_id, 'NONE') AS ticket_id,\n    COALESCE(t.severity, 'NONE') AS severity,\n    COALESCE(t.category, 'NONE') AS category,\n    COALESCE(t.summary, '최근 인시던트 없음') AS ticket_summary,\n    COALESCE(t.status, 'NONE') AS ticket_status,\n    COALESCE(TO_CHAR(t.created_at, 'YYYY-MM-DD HH24:MI:SS'), 'N/A') AS ticket_created_at\nFROM customers c\nLEFT JOIN incident_tickets t ON c.customer_id = t.customer_id\nWHERE c.company_name ILIKE '%' || $1 || '%' OR $1 ILIKE '%' || c.company_name || '%'\nORDER BY t.created_at DESC NULLS LAST\nLIMIT 5;",
+        "options": {
+          "queryReplacement": "={{ $json.company_name || '대한전자' }}"
+        }
+      },
+      "id": "c3a1b2c1-0002-4002-8002-000000000002",
+      "name": "Query Customer and Tickets",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        360,
+        1100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local-creds",
+          "name": "PostgreSQL (itsm_db)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==============================================================================\n// Week 3: 서브 워크플로우 - 고객 정보 및 티켓 목록 집계 후 JSON 직렬화\n// ==============================================================================\nconst items = $input.all();\n\nif (!items || items.length === 0) {\n  return [{\n    json: {\n      found: false,\n      message: \"일치하는 고객사 정보를 찾을 수 없습니다. 기본 Standard 등급 및 SLA 240분을 적용합니다.\",\n      contract_tier: \"Standard\",\n      sla_response_minutes: 240,\n      recent_incidents: []\n    }\n  }];\n}\n\nconst first = items[0].json;\nconst customerInfo = {\n  customer_id: first.customer_id,\n  company_name: first.company_name,\n  contract_tier: first.contract_tier,\n  is_vip: first.contract_tier === 'VIP',\n  sla_response_minutes: first.sla_response_minutes,\n  account_manager: first.account_manager_email\n};\n\nconst incidents = [];\nfor (const row of items) {\n  if (row.json.ticket_id && row.json.ticket_id !== 'NONE') {\n    incidents.push({\n      ticket_id: row.json.ticket_id,\n      severity: row.json.severity,\n      category: row.json.category,\n      summary: row.json.ticket_summary,\n      status: row.json.ticket_status,\n      created_at: row.json.ticket_created_at\n    });\n  }\n}\n\nreturn [{\n  json: {\n    found: true,\n    customer: customerInfo,\n    recent_incident_count: incidents.length,\n    recent_incidents: incidents,\n    queried_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "c3a1b2c1-0002-4002-8002-000000000003",
+      "name": "Aggregate Customer and Ticket Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        1100
+      ]
+    }
+  ],
+  "connections": {
+    "Agent Inquiry Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Input and Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Input and Session": {
+      "main": [
+        [
+          {
+            "node": "ReAct Multi-Tool Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model (Qwen 2.5 7B)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "ReAct Multi-Tool Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "ReAct Multi-Tool Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool 1: Customer DB Subworkflow": {
+      "ai_tool": [
+        [
+          {
+            "node": "ReAct Multi-Tool Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool 2: Mock Enterprise Metrics API": {
+      "ai_tool": [
+        [
+          {
+            "node": "ReAct Multi-Tool Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool 3: Qdrant Vector Store Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "ReAct Multi-Tool Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qdrant Runbook Store": {
+      "ai_vectorStore": [
+        [
+          {
+            "node": "Tool 3: Qdrant Vector Store Tool",
+            "type": "ai_vectorStore",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Embeddings (bge-m3)": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Qdrant Runbook Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ReAct Multi-Tool Agent": {
+      "main": [
+        [
+          {
+            "node": "Format Agent Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Agent Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Agent Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Subworkflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Query Customer and Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Customer and Tickets": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Customer and Ticket Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

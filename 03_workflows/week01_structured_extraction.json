@@ -1,0 +1,244 @@
+{
+  "name": "Week 01 - Structured Incident Extraction and ITSM Ticket Ingestion",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "inquiry",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e1f13b69-8083-42e1-88c9-7ef654271001",
+      "name": "Incoming Inquiry Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        100,
+        300
+      ],
+      "webhookId": "9f848203-b9b5-4b13-8167-week01inquiry"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==============================================================================\n// Week 1: 인입된 비정형 고객 문의 전처리 및 고유 티켓 ID 발급\n// ==============================================================================\nconst input = $input.first().json;\n\n// 1. 다중 페이로드 형태(body/raw_text/content) 대응 및 텍스트 추출\nconst rawText = input.body?.raw_text || input.raw_text || input.body?.content || input.content || (typeof input.body === 'string' ? input.body : JSON.stringify(input.body || input));\n\n// 2. 공백, 개행 및 특수 제어문자 정규화\nconst cleanedText = String(rawText)\n  .replace(/\\r\\n/g, '\\n')\n  .replace(/\\t/g, ' ')\n  .replace(/ +/g, ' ')\n  .trim();\n\n// 3. 고유 티켓 ID 자동 발급 (규격: TKT-YYYYMMDD-XXXX)\nconst now = new Date();\nconst datePart = now.toISOString().slice(0, 10).replace(/-/g, '');\nconst randomPart = Math.floor(1000 + Math.random() * 9000);\nconst generatedTicketId = `TKT-${datePart}-${randomPart}`;\n\nreturn [{\n  json: {\n    ticket_id: generatedTicketId,\n    cleaned_text: cleanedText,\n    received_at: now.toISOString(),\n    sender: input.body?.sender || input.sender || \"external-inquiry-webhook\"\n  }\n}];"
+      },
+      "id": "e1f13b69-8083-42e1-88c9-7ef654271002",
+      "name": "Preprocess and Generate Ticket ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=당신은 엔터프라이즈 IT 장애 관제 센터(NOC/SRE)의 수석 관제 엔지니어입니다.\n고객사로부터 인입된 아래 비정형 장애 접수 내용을 정밀 분석하여, 지정된 JSON Schema 규격에 맞춰 핵심 장애 정보를 구조화하여 추출하십시오.\n\n[장애 접수 내용 전문]:\n{{ $json.cleaned_text }}\n\n[추출 지침]:\n1. company_name: 장애를 보고하거나 겪고 있는 고객사 또는 기관의 공식 명칭을 정확히 추출하십시오. (예: (주)대한전자, 한빛바이오랩 등). 텍스트 상에서 고객사명을 확인할 수 없는 경우에만 '미상 고객사'로 표기하십시오.\n2. severity: 인입된 증상의 파급력과 비즈니스 피해 수준을 기준으로 아래 4가지 중 정확히 하나를 선택하십시오.\n   - Critical: 핵심 결제/DB 마비, 인증 시스템 전면 다운, 대규모 서비스 장애\n   - High: 주요 업무 기능 중단, 심각한 메모리 누수, Full GC 주기 단축, 보안 침해 의심\n   - Medium: 데이터 배치 지연, 네트워크 간헐적 패킷 드롭, 보조 서비스 이상\n   - Low: 단순 설정 오류, 사소한 UI 결함, 경미한 버그\n3. category: 장애 원인 및 도메인을 아래 목록 중 정확히 하나로 분류하십시오.\n   - DATABASE, AUTHENTICATION, MEMORY_LEAK, NETWORK_LATENCY, CONFIGURATION, SECURITY_ALERT, BATCH_JOB, STORAGE_CAPACITY, UI_BUG, OTHER\n4. summary: 발생한 문제 현상, 장애 대상 시스템, 업무 영향도를 1~2문장의 명확한 한국어 개조식 문장으로 요약하십시오.",
+        "hasOutputParser": true
+      },
+      "id": "e1f13b69-8083-42e1-88c9-7ef654271003",
+      "name": "Extract Structured Incident",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        620,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "qwen2.5:7b",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "e1f13b69-8083-42e1-88c9-7ef654271004",
+      "name": "Ollama Qwen 2.5 7B",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        560,
+        520
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-local-creds",
+          "name": "Ollama Local (http://ollama:11434)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"company_name\": {\n      \"type\": \"string\",\n      \"description\": \"장애를 보고한 고객사의 공식 법인명 또는 상호명 (예: (주)대한전자, 넥서스로지스틱스(주) 등)\"\n    },\n    \"severity\": {\n      \"type\": \"string\",\n      \"enum\": [\"Critical\", \"High\", \"Medium\", \"Low\"],\n      \"description\": \"장애 심각도 판정 등급\"\n    },\n    \"category\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"DATABASE\",\n        \"AUTHENTICATION\",\n        \"MEMORY_LEAK\",\n        \"NETWORK_LATENCY\",\n        \"CONFIGURATION\",\n        \"SECURITY_ALERT\",\n        \"BATCH_JOB\",\n        \"STORAGE_CAPACITY\",\n        \"UI_BUG\",\n        \"OTHER\"\n      ],\n      \"description\": \"장애의 기술적 분류 카테고리\"\n    },\n    \"summary\": {\n      \"type\": \"string\",\n      \"description\": \"발생한 장애의 핵심 현상 및 비즈니스 영향을 1~2문장으로 간결하게 정리한 요약\"\n    }\n  },\n  \"required\": [\"company_name\", \"severity\", \"category\", \"summary\"]\n}"
+      },
+      "id": "e1f13b69-8083-42e1-88c9-7ef654271005",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        740,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n    COALESCE(\n        (SELECT customer_id FROM customers \n         WHERE company_name ILIKE '%' || $1 || '%' OR $1 ILIKE '%' || company_name || '%' \n         LIMIT 1),\n        'CUST-1001'\n    ) AS customer_id,\n    COALESCE(\n        (SELECT contract_tier FROM customers \n         WHERE company_name ILIKE '%' || $1 || '%' OR $1 ILIKE '%' || company_name || '%' \n         LIMIT 1),\n        'Standard'\n    ) AS contract_tier,\n    COALESCE(\n        (SELECT sla_response_minutes FROM customers \n         WHERE company_name ILIKE '%' || $1 || '%' OR $1 ILIKE '%' || company_name || '%' \n         LIMIT 1),\n        240\n    ) AS sla_response_minutes;",
+        "options": {
+          "queryReplacement": "={{ $json.output.company_name }}"
+        }
+      },
+      "id": "e1f13b69-8083-42e1-88c9-7ef654271006",
+      "name": "Lookup Customer by Name",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        920,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-itsm-creds",
+          "name": "Postgres ITSM DB (postgres:5432)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO incident_tickets (\n    ticket_id,\n    customer_id,\n    severity,\n    category,\n    summary,\n    status,\n    created_at\n) VALUES (\n    $1,\n    $2,\n    $3,\n    $4,\n    $5,\n    'Open',\n    NOW()\n)\nRETURNING ticket_id, customer_id, severity, category, summary, status, created_at;",
+        "options": {
+          "queryReplacement": "={{ $('Preprocess and Generate Ticket ID').item.json.ticket_id }}, ={{ $json.customer_id }}, ={{ $('Extract Structured Incident').item.json.output.severity }}, ={{ $('Extract Structured Incident').item.json.output.category }}, ={{ $('Extract Structured Incident').item.json.output.summary }}"
+        }
+      },
+      "id": "e1f13b69-8083-42e1-88c9-7ef654271007",
+      "name": "Insert Incident Record",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1180,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-itsm-creds",
+          "name": "Postgres ITSM DB (postgres:5432)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Incident ticket successfully ingested and categorized by AI pipeline.\",\n  \"ticket\": {\n    \"ticket_id\": $json.ticket_id,\n    \"customer_id\": $json.customer_id,\n    \"company_name\": $('Extract Structured Incident').item.json.output.company_name,\n    \"severity\": $json.severity,\n    \"category\": $json.category,\n    \"status\": $json.status,\n    \"summary\": $json.summary,\n    \"sla_response_minutes\": $('Lookup Customer by Name').item.json.sla_response_minutes,\n    \"created_at\": $json.created_at\n  }\n}",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "e1f13b69-8083-42e1-88c9-7ef654271008",
+      "name": "Respond Ticket Ingestion Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1440,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Incoming Inquiry Webhook": {
+      "main": [
+        [
+          {
+            "node": "Preprocess and Generate Ticket ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preprocess and Generate Ticket ID": {
+      "main": [
+        [
+          {
+            "node": "Extract Structured Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Qwen 2.5 7B": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Extract Structured Incident",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Extract Structured Incident",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Structured Incident": {
+      "main": [
+        [
+          {
+            "node": "Lookup Customer by Name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Customer by Name": {
+      "main": [
+        [
+          {
+            "node": "Insert Incident Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Incident Record": {
+      "main": [
+        [
+          {
+            "node": "Respond Ticket Ingestion Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "week01-structured-extraction-v1",
+  "id": "week01-structured-extraction",
+  "tags": [
+    {
+      "name": "Week 1",
+      "id": "tag-week-1"
+    },
+    {
+      "name": "ITSM",
+      "id": "tag-itsm"
+    }
+  ]
+}

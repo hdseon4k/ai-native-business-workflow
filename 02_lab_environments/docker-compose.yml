@@ -1,0 +1,165 @@
+version: '3.8'
+
+# ==============================================================================
+# AI Native Business Workflow - 5주 완성 실습용 올인원 컨테이너 인프라
+#
+# 구성 서비스:
+#   1. n8n                 : AI 에이전트 및 비즈니스 워크플로우 오케스트레이션 엔진 (5678)
+#   2. ollama              : 온프레미스 경량 LLM/임베딩 추론 서버 (11434)
+#   3. postgres (pgvector) : 엔터프라이즈 정형 ITSM 데이터 및 벡터 스토어 (5432)
+#   4. qdrant              : 전용 고성능 사내 지식 베이스 벡터 데이터베이스 (6333, 6334)
+#   5. mock-enterprise-api : 사내 실시간 메트릭 및 조치 API 모사 서버 (8000)
+#
+# 네트워크:
+#   ai-native-net          : 컨테이너 간 안전한 폐쇄망 내부 DNS 통신용 단일 브릿지
+# ==============================================================================
+
+networks:
+  ai-native-net:
+    name: ai-native-net
+    driver: bridge
+
+volumes:
+  n8n_data:
+    name: n8n_data
+  ollama_data:
+    name: ollama_data
+  postgres_data:
+    name: postgres_data
+  qdrant_data:
+    name: qdrant_data
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. n8n 워크플로우 오케스트레이션 엔진
+  # ----------------------------------------------------------------------------
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    hostname: n8n
+    restart: unless-stopped
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-clo_ai_native_workflow_super_secret_encryption_key_2026_x89f}
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678/}
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-Asia/Seoul}
+      - TZ=${TZ:-Asia/Seoul}
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_PERSONALIZATION_ENABLED=false
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+      # 커스텀 모듈 및 패키지 실행 허용 설정
+      - NODE_FUNCTION_ALLOW_BUILTIN=*
+      - NODE_FUNCTION_ALLOW_EXTERNAL=*
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./sample_docs:/data/sample_docs:ro
+    networks:
+      - ai-native-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      mock-enterprise-api:
+        condition: service_started
+
+  # ----------------------------------------------------------------------------
+  # 2. Ollama 온프레미스 sLM 추론 서버
+  # ----------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    hostname: ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_HOST=0.0.0.0
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - ai-native-net
+    # --------------------------------------------------------------------------
+    # [NVIDIA GPU 가속 설정 가이드]
+    # NVIDIA GPU 및 NVIDIA Container Toolkit이 설치된 Linux / WSL2 환경에서는
+    # 아래 deploy 블록의 주석(#)을 해제하면 CUDA GPU 패스스루가 활성화됩니다.
+    # macOS(Apple Silicon)의 경우 호스트 로컬 Ollama를 실행하고
+    # n8n에서 'http://host.docker.internal:11434'로 연결할 수 있습니다.
+    # --------------------------------------------------------------------------
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ----------------------------------------------------------------------------
+  # 3. PostgreSQL 16 + pgvector (ITSM 비즈니스 DB 및 벡터 스토어)
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres
+    hostname: postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-itsm_admin}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-itsm_secure_password_2026!}
+      - POSTGRES_DB=${POSTGRES_DB:-itsm_db}
+      - TZ=Asia/Seoul
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_db:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ai-native-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-itsm_admin} -d ${POSTGRES_DB:-itsm_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ----------------------------------------------------------------------------
+  # 4. Qdrant 벡터 데이터베이스 (사내 기술 매뉴얼/SLA RAG 전용)
+  # ----------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    hostname: qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - ai-native-net
+
+  # ----------------------------------------------------------------------------
+  # 5. 사내 모니터링 & 조치 모사 API 서버 (FastAPI)
+  # ----------------------------------------------------------------------------
+  mock-enterprise-api:
+    build:
+      context: ./mock_enterprise_api
+      dockerfile: Dockerfile
+    container_name: mock-enterprise-api
+    hostname: mock-enterprise-api
+    restart: unless-stopped
+    ports:
+      - "${MOCK_API_PORT:-8000}:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - TZ=Asia/Seoul
+    networks:
+      - ai-native-net

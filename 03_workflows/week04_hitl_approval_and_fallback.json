@@ -1,0 +1,619 @@
+{
+  "name": "Week 04 - Production Reliability, HITL Approval Gateway, and Error Logging",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "remediation-request",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000001",
+      "name": "Incident Remediation Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        100,
+        300
+      ],
+      "webhookId": "c4d10001-week04-remediation"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==============================================================================\n// Week 4: 입력 가드레일 (Input Guardrail) - 프롬프트 인젝션 및 시스템 파괴 명령 차단\n// ==============================================================================\nconst input = $input.first().json;\n\nconst rawPrompt = input.body?.prompt || input.body?.incident_summary || input.prompt || \"\";\nconst targetServer = input.body?.server_id || input.server_id || \"db-primary-01\";\nconst customerTier = input.body?.contract_tier || input.contract_tier || \"VIP\";\nconst requester = input.body?.requester || input.requester || \"sre_automated_agent\";\n\n// 1. 프롬프트 인젝션 및 시스템 탈취 의심 패턴 정규식 검사\nconst injectionPatterns = [\n  /ignore previous instructions/i,\n  /system override/i,\n  /drop table/i,\n  /delete from/i,\n  /rm -rf/i,\n  /chmod 777/i,\n  /\\<script\\>/i,\n  /curl.*\\|.*sh/i\n];\n\nlet isThreatDetected = false;\nlet threatReason = \"\";\n\nfor (const pattern of injectionPatterns) {\n  if (pattern.test(rawPrompt)) {\n    isThreatDetected = true;\n    threatReason = `악성 인젝션 패턴 감지: ${pattern}`;\n    break;\n  }\n}\n\nreturn [{\n  json: {\n    is_safe: !isThreatDetected,\n    threat_reason: threatReason,\n    prompt: rawPrompt,\n    server_id: targetServer,\n    contract_tier: customerTier,\n    requester: requester,\n    received_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000002",
+      "name": "Input Guardrail Filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_safe }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000003",
+      "name": "Check Safety Guardrail",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        540,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit_logs (workflow_name, action_type, actor, payload_json, executed_at)\nVALUES (\n    'Security_Guardrail_Gateway',\n    'SECURITY_INJECTION_BLOCKED',\n    $1,\n    $2::jsonb,\n    NOW()\n)\nRETURNING log_id;",
+        "options": {
+          "queryReplacement": "={{ $json.requester }},={{ JSON.stringify($json) }}"
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000004",
+      "name": "Audit Blocked Threat",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        760,
+        140
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local-creds",
+          "name": "PostgreSQL (itsm_db)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"blocked\",\n  \"error\": \"Security Guardrail Violation\",\n  \"message\": \"{{ $('Input Guardrail Filter').item.json.threat_reason }}\",\n  \"blocked_at\": \"{{ new Date().toISOString() }}\"\n}",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000005",
+      "name": "Reject Threat Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        980,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=당신은 SRE 긴급 조치 플래너입니다. 아래 인시던트 보고를 분석하여 조치 계획(Action Plan)을 JSON Schema 규격에 맞춰 출력하십시오.\n\n[인시던트 보고 내용]:\n{{ $json.prompt }}\n- 대상 서버: {{ $json.server_id }}\n- 고객 등급: {{ $json.contract_tier }}\n\n반드시 지정된 JSON 스키마 규격으로만 응답해야 하며, action_type은 'RESET_DB_POOL', 'SCALE_OUT_WAS', 'CLEAR_CACHE', 'MANual_INSPECTION' 중 하나를 선택하십시오.",
+        "hasOutputParser": true
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000006",
+      "name": "Generate Action Plan",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        760,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "model": "qwen2.5:7b",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000007",
+      "name": "Ollama LLM (Qwen 2.5 7B)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        700,
+        580
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-local-creds",
+          "name": "Ollama Local (http://ollama:11434)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"action_type\": {\n      \"type\": \"string\",\n      \"enum\": [\"RESET_DB_POOL\", \"SCALE_OUT_WAS\", \"CLEAR_CACHE\", \"MANUAL_INSPECTION\"],\n      \"description\": \"실행할 권고 조치 작업 유형\"\n    },\n    \"target_server_id\": {\n      \"type\": \"string\",\n      \"description\": \"조치 대상 서버 식별자\"\n    },\n    \"risk_level\": {\n      \"type\": \"string\",\n      \"enum\": [\"Critical\", \"High\", \"Medium\", \"Low\"],\n      \"description\": \"조치 실행에 따른 서비스 영향도 위험 수준\"\n    },\n    \"requires_human_approval\": {\n      \"type\": \"boolean\",\n      \"description\": \"고위험 작업으로서 온콜 엔지니어의 수동 승인이 필수적인지 여부\"\n    },\n    \"reason\": {\n      \"type\": \"string\",\n      \"description\": \"조치 실행의 근거 및 기술적 배경 요약\"\n    }\n  },\n  \"required\": [\"action_type\", \"target_server_id\", \"risk_level\", \"requires_human_approval\", \"reason\"]\n}"
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000008",
+      "name": "Auto-fixing Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserAutofixing",
+      "typeVersion": 1,
+      "position": [
+        880,
+        580
+      ]
+    },
+    {
+      "parameters": {
+        "model": "qwen2.5:7b",
+        "options": {
+          "temperature": 0.0
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000009",
+      "name": "Fixing LLM Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        880,
+        760
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-local-creds",
+          "name": "Ollama Local (http://ollama:11434)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==============================================================================\n// Week 4: 위험도 판정 및 비동기 승인 URL 생성 ($execution.resumeUrl)\n// ==============================================================================\nconst plan = $input.first().json.output || $input.first().json;\nconst guardrailContext = $('Input Guardrail Filter').item.json;\n\n// 1. 고위험 액션 조건 판정 (VIP 고객사 또는 High/Critical 리스크 또는 RESET_DB_POOL)\nconst isHighRisk = plan.risk_level === 'Critical' || plan.risk_level === 'High' || plan.action_type === 'RESET_DB_POOL' || guardrailContext.contract_tier === 'VIP';\n\n// 2. n8n 비동기 재개 웹훅 URL 조립 (실행 인스턴스 전용)\n// 프로덕션/테스트 환경의 executionId 기반 일회성 재개 주소 생성\nconst baseUrl = $execution.resumeUrl || `http://localhost:5678/webhook-waiting/${$execution.id}`;\nconst approveUrl = `${baseUrl}?decision=approve&token=${Math.random().toString(36).substring(2, 10)}`;\nconst rejectUrl = `${baseUrl}?decision=reject&token=${Math.random().toString(36).substring(2, 10)}`;\n\nreturn [{\n  json: {\n    plan: plan,\n    is_high_risk: isHighRisk,\n    requires_hitl: isHighRisk,\n    target_server: plan.target_server_id || guardrailContext.server_id,\n    contract_tier: guardrailContext.contract_tier,\n    approval_payload: {\n      incident_summary: guardrailContext.prompt,\n      action_type: plan.action_type,\n      risk_level: plan.risk_level,\n      reason: plan.reason,\n      approve_url: approveUrl,\n      reject_url: rejectUrl,\n      created_at: new Date().toISOString()\n    }\n  }\n}];"
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000010",
+      "name": "Evaluate Risk and Build Resume URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.requires_hitl }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000011",
+      "name": "Check If HITL Required",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {}
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000012",
+      "name": "Wait For Human Approval",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1480,
+        320
+      ],
+      "webhookId": "w4-hitl-resume-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.query?.decision || $json.body?.decision || 'approve' }}",
+              "value2": "approve"
+            }
+          ]
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000013",
+      "name": "Branch On Human Decision",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://mock-enterprise-api:8000/api/v1/actions/reset-db-pool",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"server_id\": \"{{ $('Evaluate Risk and Build Resume URL').item.json.target_server }}\",\n  \"reason\": \"{{ $('Evaluate Risk and Build Resume URL').item.json.plan.reason }}\",\n  \"authorized_by\": \"lead_sre_approver@enterprise.internal\",\n  \"ticket_id\": \"TKT-2026-001\"\n}",
+        "options": {
+          "retry": {
+            "retry": {
+              "maxTries": 3,
+              "waitBetweenTries": 1000
+            }
+          }
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000014",
+      "name": "Execute High Risk Remediation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1940,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit_logs (workflow_name, action_type, actor, payload_json, executed_at)\nVALUES (\n    'Production_ITSM_Remediation',\n    'HITL_ACTION_EXECUTED',\n    'lead_sre_approver@enterprise.internal',\n    $1::jsonb,\n    NOW()\n)\nRETURNING log_id, executed_at;",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json) }}"
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000015",
+      "name": "Audit Log Approved Execution",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2160,
+        240
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local-creds",
+          "name": "PostgreSQL (itsm_db)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"remediated\",\n  \"decision\": \"approved\",\n  \"remediation_result\": {{ JSON.stringify($json) }},\n  \"audit_committed\": true,\n  \"message\": \"VIP 고객사 인시던트에 대한 고위험 조치(DB 커넥션 풀 초기화)가 승인되어 성공적으로 집행되었습니다.\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000016",
+      "name": "Respond Approved Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2380,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit_logs (workflow_name, action_type, actor, payload_json, executed_at)\nVALUES (\n    'Production_ITSM_Remediation',\n    'HITL_ACTION_REJECTED',\n    'oncall_engineer@enterprise.internal',\n    $1::jsonb,\n    NOW()\n)\nRETURNING log_id, executed_at;",
+        "options": {
+          "queryReplacement": "={\n  \"decision\": \"rejected\",\n  \"reason\": \"엔지니어 판단에 의해 자동 조치 반려 및 수동 백로그 이관\",\n  \"plan\": {{ JSON.stringify($('Evaluate Risk and Build Resume URL').item.json.plan) }}\n}"
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000017",
+      "name": "Audit Log Rejected Remediation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1940,
+        440
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local-creds",
+          "name": "PostgreSQL (itsm_db)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"rejected_and_escalated\",\n  \"decision\": \"rejected\",\n  \"message\": \"관리자에 의해 자동 조치가 반려되었습니다. 인시던트가 2차 온콜 엔지니어 수동 티켓으로 이관되었습니다.\",\n  \"audit_committed\": true\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000018",
+      "name": "Respond Rejected Notice",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2160,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"auto_executed\",\n  \"decision\": \"low_risk_auto_pass\",\n  \"plan\": {{ JSON.stringify($('Evaluate Risk and Build Resume URL').item.json.plan) }},\n  \"message\": \"저위험 작업으로 판정되어 승인 없이 즉시 조치되었습니다.\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "d4a1b2c1-0001-4001-8001-000000000019",
+      "name": "Respond Low Risk Direct Pass",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1480,
+        520
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d4a1b2c1-0002-4002-8002-000000000001",
+      "name": "Global Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==============================================================================\n// Week 4: 전역 에러 핸들러 - 실패 실행의 원인, 노드, 타임스탬프 추출 및 정규화\n// ==============================================================================\nconst errorItem = $input.first().json;\n\nconst execution = errorItem.execution || {};\nconst workflow = errorItem.workflow || {};\nconst lastError = execution.error || errorItem.error || {};\n\nreturn [{\n  json: {\n    workflow_id: workflow.id || \"week04_hitl_workflow\",\n    workflow_name: workflow.name || \"Week 04 - Production Reliability\",\n    execution_id: execution.id || \"unknown_exec_id\",\n    failed_node_name: lastError.node?.name || \"Unknown_Node\",\n    error_type: lastError.name || \"WorkflowExecutionError\",\n    error_message: lastError.message || \"알 수 없는 런타임 결함 발생\",\n    stack_trace: lastError.stack ? String(lastError.stack).slice(0, 500) : \"N/A\",\n    failed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "d4a1b2c1-0002-4002-8002-000000000002",
+      "name": "Normalize Error Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit_logs (workflow_name, action_type, actor, payload_json, executed_at)\nVALUES (\n    $1,\n    'WORKFLOW_RUNTIME_EXCEPTION',\n    'n8n_error_trigger',\n    $2::jsonb,\n    NOW()\n)\nRETURNING log_id, executed_at;",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_name }},={{ JSON.stringify($json) }}"
+        }
+      },
+      "id": "d4a1b2c1-0002-4002-8002-000000000003",
+      "name": "Persist Error to Audit Logs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        580,
+        1000
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local-creds",
+          "name": "PostgreSQL (itsm_db)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Incident Remediation Webhook": {
+      "main": [
+        [
+          {
+            "node": "Input Guardrail Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Guardrail Filter": {
+      "main": [
+        [
+          {
+            "node": "Check Safety Guardrail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Safety Guardrail": {
+      "main": [
+        [
+          {
+            "node": "Generate Action Plan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Blocked Threat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Blocked Threat": {
+      "main": [
+        [
+          {
+            "node": "Reject Threat Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama LLM (Qwen 2.5 7B)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate Action Plan",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-fixing Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Generate Action Plan",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fixing LLM Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Auto-fixing Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Action Plan": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Risk and Build Resume URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Risk and Build Resume URL": {
+      "main": [
+        [
+          {
+            "node": "Check If HITL Required",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If HITL Required": {
+      "main": [
+        [
+          {
+            "node": "Wait For Human Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Low Risk Direct Pass",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait For Human Approval": {
+      "main": [
+        [
+          {
+            "node": "Branch On Human Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Branch On Human Decision": {
+      "main": [
+        [
+          {
+            "node": "Execute High Risk Remediation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Log Rejected Remediation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute High Risk Remediation": {
+      "main": [
+        [
+          {
+            "node": "Audit Log Approved Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Log Approved Execution": {
+      "main": [
+        [
+          {
+            "node": "Respond Approved Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Log Rejected Remediation": {
+      "main": [
+        [
+          {
+            "node": "Respond Rejected Notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Global Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Error Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Error Payload": {
+      "main": [
+        [
+          {
+            "node": "Persist Error to Audit Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

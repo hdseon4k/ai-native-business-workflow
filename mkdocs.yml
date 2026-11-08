@@ -1,0 +1,65 @@
+site_name: "AI Native Business Workflow (5주 자기주도학습 웹북)"
+site_description: "n8n과 온프레미스 sLM(Ollama)으로 구축하는 엔터프라이즈 에이전틱 오케스트레이션 실습 교재"
+site_url: "https://hdseon4k.github.io/ai-native-business-workflow/"
+repo_url: "https://github.com/hdseon4k/ai-native-business-workflow"
+repo_name: "hdseon4k/ai-native-business-workflow"
+docs_dir: 01_manuscript
+site_dir: site
+
+theme:
+  name: material
+  language: ko
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: 다크 모드로 전환
+    - scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: 라이트 모드로 전환
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+nav:
+  - 과정 홈 (Overview): index.md
+  - 5주 자기주도 실습 커리큘럼:
+      - "Week 01: 온프레미스 인프라 & 정형 데이터 추출": Week01_Infra_and_Structured_Output.md
+      - "Week 02: 사내 지식 기반 온프레미스 RAG": Week02_OnPremise_RAG_Vector_Pipeline.md
+      - "Week 03: 자율 에이전트 & Multi-Tool 바인딩": Week03_Agentic_Orchestration_MultiTool.md
+      - "Week 04: 신뢰성 엔지니어링 & Human-in-the-Loop": Week04_Production_HITL_Fault_Tolerance.md
+      - "Week 05: 하이브리드 확장 & End-to-End 캡스톤": Week05_Hybrid_Capstone_and_LLMOps.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.arithmatex:
+      generic: true
+  - tables
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js

@@ -75,7 +75,7 @@ cp .env.example .env
 
 ### Step 2: 올인원 컨테이너 스택 구동
 ```bash
-docker compose up -d
+sudo docker compose up -d
 ```
 구동되는 5개 핵심 서비스:
 - `n8n` 워크플로우 캔버스: `http://localhost:5678`
@@ -87,10 +87,10 @@ docker compose up -d
 ### Step 3: 실습용 로컬 sLM 및 임베딩 모델 다운로드 (최초 1회)
 ```bash
 # 추론 및 Tool Calling용 sLM (약 4.7GB)
-docker exec -it ai-native-ollama ollama pull qwen2.5:7b
+sudo docker exec -it ollama ollama pull qwen2.5:7b
 
 # 다국어/한국어 고성능 임베딩 모델 (약 1.2GB)
-docker exec -it ai-native-ollama ollama pull bge-m3
+sudo docker exec -it ollama ollama pull bge-m3
 ```
 
 > [!TIP]

@@ -104,7 +104,7 @@ sudo docker exec -it ollama ollama pull bge-m3
 
 ```bash
 cd 02_lab_environments
-python verify_capstone.py
+python3 verify_capstone.py
 ```
 - **자동 점검 시나리오 4종**:
   1. 일반(`Standard`) 고객 단순 문의 접수 및 정상 분류 확인

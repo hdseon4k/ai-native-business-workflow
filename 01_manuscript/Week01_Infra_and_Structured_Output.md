@@ -292,15 +292,15 @@ curl -s http://localhost:11434/api/tags
 flowchart TB
     subgraph WSL2_Linux["Windows (WSL2) & Native Linux 아키텍처"]
         subgraph Bridge1["Docker Network (ai-native-net)"]
-            n8n_1[n8n 컨테이너] -->|"http://ollama:11434 (도커 내부 DNS)"| ollama_1[ollama 컨테이너 + NVIDIA GPU]
+            n8n_1["n8n 컨테이너"] -->|"http://ollama:11434 (도커 내부 DNS)"| ollama_1["ollama 컨테이너 + NVIDIA GPU"]
         end
     end
 
     subgraph macOS_Apple["macOS (Apple Silicon M-Series) 아키텍처"]
         subgraph Bridge2["Docker Network (ai-native-net)"]
-            n8n_2[n8n 컨테이너]
+            n8n_2["n8n 컨테이너"]
         end
-        HostOllama[호스트 머신 네이티브 Ollama (Metal GPU 가속)]
+        HostOllama["호스트 머신 네이티브 Ollama (Metal GPU 가속)"]
         n8n_2 -->|"http://host.docker.internal:11434"| HostOllama
     end
 ```
